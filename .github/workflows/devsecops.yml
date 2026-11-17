@@ -1,0 +1,30 @@
+name: DevSecOps
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  sast-semgrep:
+    name: SAST · Semgrep
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Informe completo (para DefectDojo)
+        run: semgrep scan --config p/javascript --config p/typescript --json --output semgrep.json
+
+      - name: Guardar el informe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: semgrep.json
+
+      - name: Quality gate (bloquea si hay severidad alta)
+        run: semgrep scan --config p/javascript --config p/typescript --severity ERROR --error
