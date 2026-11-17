@@ -50,9 +50,9 @@ jobs:
             echo "## SAST · Semgrep"
             echo "**$total hallazgos:** $alta de severidad alta (ERROR, bloquean) y $media media (WARNING)."
             echo ""
-            echo "| Severidad | Regla | Fichero:línea |"
-            echo "|---|---|---|"
-            jq -r '.results | sort_by(.extra.severity) | .[] | "| \(.extra.severity) | \(.check_id | split(".") | last) | `\(.path):\(.start.line)` |"' $f
+            echo "| Severidad | Regla | Fichero:línea | Mensaje |"
+            echo "|---|---|---|---|"
+            jq -r '.results | sort_by(.extra.severity) | .[] | "| \(.extra.severity) | \(.check_id | split(".") | last) | `\(.path):\(.start.line)` | \(.extra.message | gsub("\n"; " ") | gsub("\\|"; "\\|")) |"' $f
           } >> $GITHUB_STEP_SUMMARY
 
       - name: Subir todos los informes juntos
