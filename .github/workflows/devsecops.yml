@@ -14,17 +14,49 @@ jobs:
       image: semgrep/semgrep
     steps:
       - name: Descargar el código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Informe completo (para DefectDojo)
         run: semgrep scan --config p/javascript --config p/typescript --json --output semgrep.json
 
       - name: Guardar el informe
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: semgrep-report
           path: semgrep.json
 
       - name: Quality gate (bloquea si hay severidad alta)
         run: semgrep scan --config p/javascript --config p/typescript --severity ERROR --error
+  reportes:
+    name: Reportes de seguridad
+    runs-on: ubuntu-latest
+    needs: [sast-semgrep]
+    if: always()
+    steps:
+      - name: Descargar los informes de los otros jobs
+        uses: actions/download-artifact@v5
+        with:
+          path: reportes
+          merge-multiple: true
+
+      - name: Mostrar los hallazgos en la página de la ejecución
+        run: |
+          f=reportes/semgrep.json
+          alta=$(jq '[.results[] | select(.extra.severity=="ERROR")] | length' $f)
+          media=$(jq '[.results[] | select(.extra.severity=="WARNING")] | length' $f)
+          total=$(jq '.results | length' $f)
+          {
+            echo "## SAST · Semgrep"
+            echo "**$total hallazgos:** $alta de severidad alta (ERROR, bloquean) y $media media (WARNING)."
+            echo ""
+            echo "| Severidad | Regla | Fichero:línea |"
+            echo "|---|---|---|"
+            jq -r '.results | sort_by(.extra.severity) | .[] | "| \(.extra.severity) | \(.check_id | split(".") | last) | `\(.path):\(.start.line)` |"' $f
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Subir todos los informes juntos
+        uses: actions/upload-artifact@v5
+        with:
+          name: devsecops-reports
+          path: reportes/        
