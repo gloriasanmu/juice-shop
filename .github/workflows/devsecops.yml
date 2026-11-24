@@ -96,6 +96,7 @@ jobs:
   dast-zap:
     name: DAST · ZAP
     runs-on: ubuntu-latest
+    needs: [sast-semgrep, sca-dependency-check, iac-trivy]
     services:
       juiceshop:
         image: bkimminich/juice-shop
