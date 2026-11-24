@@ -93,10 +93,40 @@ jobs:
         run: |
           trivy config --severity MEDIUM,HIGH,CRITICAL --exit-code 1 . \
             || echo "::warning title=IaC · Trivy::Malas configuraciones de severidad media o más (modo aviso, no bloquea)"
+  dast-zap:
+    name: DAST · ZAP
+    runs-on: ubuntu-latest
+    services:
+      juiceshop:
+        image: bkimminich/juice-shop
+        ports:
+          - 3000:3000
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v5
+
+      - name: Esperar a que Juice Shop arranque
+        run: timeout 120 bash -c 'until curl -s http://localhost:3000 > /dev/null; do sleep 3; done'
+
+      - name: ZAP baseline (BLOQUEA si hay alertas)
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: 'http://localhost:3000'
+          fail_action: true
+          allow_issue_writing: false
+          cmd_options: '-x report_xml.xml'
+          artifact_name: zap-report
+
+      - name: Guardar el informe XML (para DefectDojo)
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: zap-xml
+          path: report_xml.xml
   reportes:
     name: Reportes de seguridad
     runs-on: ubuntu-latest
-    needs: [sast-semgrep,sca-dependency-check,iac-trivy]
+    needs: [sast-semgrep,sca-dependency-check,iac-trivy, dast-zap]
     if: always()
     steps:
       - name: Descargar los informes de los otros jobs
@@ -132,7 +162,7 @@ jobs:
             echo ""
             echo "| Severidad | CVE | Dependencia | CVSS |"
             echo "|---|---|---|---|"
-            jq -r '[.dependencies[]? | .fileName as $p | .vulnerabilities[]? | {s: .severity, n: .name, p: $p, c: (.cvssv3.baseScore // .cvssv2.score // 0)}] | sort_by(-.c) | .[:30][] | "| \(.s) | \(.n) | `\(.p)` | \(.c) |"' $d
+            jq -r '[.dependencies[]? | .fileName as $p | .vulnerabilities[]? | {s: .severity, n: .name, p: $p, c: (.cvssv3.baseScore // .cvssv2.score // 0)}] | sort_by(-.c) | .[:30][] | "| \(.s) | \(.n) | `\(.p)` | \((.c * 10 | round) / 10) |"' $d
           } >> $GITHUB_STEP_SUMMARY
       - name: Resumen IaC (Trivy)
         run: |
@@ -146,6 +176,19 @@ jobs:
             echo "| Severidad | Regla | Fichero:línea | Título |"
             echo "|---|---|---|---|"
             jq -r '.Results[]? | .Target as $f | .Misconfigurations[]? | "| \(.Severity) | \(.ID) | `\($f):\(.CauseMetadata.StartLine // "-")` | \(.Title) |"' $t
+          } >> $GITHUB_STEP_SUMMARY
+      - name: Resumen DAST (ZAP)
+        run: |
+          z=reportes/report_json.json
+          [ -f "$z" ] || { echo "## DAST · ZAP: sin informe" >> $GITHUB_STEP_SUMMARY; exit 0; }
+          total=$(jq '[.site[]?.alerts[]?] | length' $z)
+          {
+            echo "## DAST · ZAP"
+            echo "**$total tipos de alerta** (BLOQUEANTE: cualquier alerta pone el job en rojo)."
+            echo ""
+            echo "| Riesgo | Alerta | Instancias | Regla |"
+            echo "|---|---|---|---|"
+            jq -r '[.site[]?.alerts[]?] | sort_by(-(.riskcode | tonumber)) | .[] | "| \(.riskdesc) | \(.name) | \(.count) | \(.pluginid) |"' $z
           } >> $GITHUB_STEP_SUMMARY
       - name: Subir todos los informes juntos
         uses: actions/upload-artifact@v5
