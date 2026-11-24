@@ -28,10 +28,33 @@ jobs:
 
       - name: Quality gate (bloquea si hay severidad alta)
         run: semgrep scan --config p/javascript --config p/typescript --severity ERROR --error
+  iac-trivy:
+      name: IaC · Trivy
+      runs-on: ubuntu-latest
+      container:
+        image: aquasec/trivy:0.58.1
+      steps:
+      - name: Descargar el código
+        uses: actions/checkout@v5
+
+      - name: Informe completo (para DefectDojo)
+        run: trivy config --format json --output trivy-iac.json .
+
+      - name: Guardar el informe
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: iac-report
+          path: trivy-iac.json
+
+      - name: Quality gate en modo AVISO (media o más)
+        run: |
+          trivy config --severity MEDIUM,HIGH,CRITICAL --exit-code 1 . \
+            || echo "::warning title=IaC · Trivy::Malas configuraciones de severidad media o más (modo aviso, no bloquea)"
   reportes:
     name: Reportes de seguridad
     runs-on: ubuntu-latest
-    needs: [sast-semgrep]
+    needs: [sast-semgrep, iac-trivy]
     if: always()
     steps:
       - name: Descargar los informes de los otros jobs
@@ -55,6 +78,19 @@ jobs:
             jq -r '.results | sort_by(.extra.severity) | .[] | "| \(.extra.severity) | \(.check_id | split(".") | last) | `\(.path):\(.start.line)` | \(.extra.message | gsub("\n"; " ") | gsub("\\|"; "\\|")) |"' $f
           } >> $GITHUB_STEP_SUMMARY
 
+      - name: Resumen IaC (Trivy)
+        run: |
+          t=reportes/trivy-iac.json
+          [ -f "$t" ] || { echo "## IaC · Trivy: sin informe" >> $GITHUB_STEP_SUMMARY; exit 0; }
+          total=$(jq '[.Results[]?.Misconfigurations[]?] | length' $t)
+          {
+            echo "## IaC · Trivy"
+            echo "**$total malas configuraciones** (modo aviso, no bloquean)."
+            echo ""
+            echo "| Severidad | Regla | Fichero:línea | Título |"
+            echo "|---|---|---|---|"
+            jq -r '.Results[]? | .Target as $f | .Misconfigurations[]? | "| \(.Severity) | \(.ID) | `\($f):\(.CauseMetadata.StartLine // "-")` | \(.Title) |"' $t
+          } >> $GITHUB_STEP_SUMMARY
       - name: Subir todos los informes juntos
         uses: actions/upload-artifact@v5
         with:
