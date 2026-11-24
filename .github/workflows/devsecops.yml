@@ -28,6 +28,48 @@ jobs:
 
       - name: Quality gate (bloquea si hay severidad alta)
         run: semgrep scan --config p/javascript --config p/typescript --severity ERROR --error
+  sca-dependency-check:
+    name: SCA · Dependency-Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v5
+
+      - name: Instalar Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Generar package-lock.json (Juice Shop no lo trae)
+        run: npm install --package-lock-only --ignore-scripts --legacy-peer-deps
+
+      - name: Recuperar la base de datos de CVE de ejecuciones anteriores
+        uses: actions/cache@v4
+        with:
+          path: ~/.dc-data
+          key: dc-data-${{ github.run_id }}
+          restore-keys: dc-data-
+
+      - name: Dependency-Check (modo AVISO si CVSS 7 o más)
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          mkdir -p ~/.dc-data reports
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD":/src -v "$HOME/.dc-data":/usr/share/dependency-check/data \
+            owasp/dependency-check:12.1.0 \
+            --scan /src/package-lock.json --project juice-shop \
+            --format JSON --format HTML --out /src/reports \
+            ${NVD_API_KEY:+--nvdApiKey $NVD_API_KEY} \
+            --failOnCVSS 7 \
+          || echo "::warning title=SCA · Dependency-Check::Dependencias con CVSS 7 o más (modo aviso, no bloquea)"
+
+      - name: Guardar el informe
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: sca-report
+          path: reports/dependency-check-report.json
   iac-trivy:
       name: IaC · Trivy
       runs-on: ubuntu-latest
@@ -54,7 +96,7 @@ jobs:
   reportes:
     name: Reportes de seguridad
     runs-on: ubuntu-latest
-    needs: [sast-semgrep, iac-trivy]
+    needs: [sast-semgrep,sca-dependency-check,iac-trivy]
     if: always()
     steps:
       - name: Descargar los informes de los otros jobs
@@ -78,6 +120,20 @@ jobs:
             jq -r '.results | sort_by(.extra.severity) | .[] | "| \(.extra.severity) | \(.check_id | split(".") | last) | `\(.path):\(.start.line)` | \(.extra.message | gsub("\n"; " ") | gsub("\\|"; "\\|")) |"' $f
           } >> $GITHUB_STEP_SUMMARY
 
+      - name: Resumen SCA (Dependency-Check)
+        run: |
+          d=reportes/dependency-check-report.json
+          [ -f "$d" ] || { echo "## SCA · Dependency-Check: sin informe" >> $GITHUB_STEP_SUMMARY; exit 0; }
+          total=$(jq '[.dependencies[]?.vulnerabilities[]?] | length' $d)
+          paquetes=$(jq '[.dependencies[]? | select(.vulnerabilities)] | length' $d)
+          {
+            echo "## SCA · Dependency-Check"
+            echo "**$total vulnerabilidades en $paquetes dependencias** (modo aviso, no bloquean). Se muestran las 30 más graves; el resto está en el artifact."
+            echo ""
+            echo "| Severidad | CVE | Dependencia | CVSS |"
+            echo "|---|---|---|---|"
+            jq -r '[.dependencies[]? | .fileName as $p | .vulnerabilities[]? | {s: .severity, n: .name, p: $p, c: (.cvssv3.baseScore // .cvssv2.score // 0)}] | sort_by(-.c) | .[:30][] | "| \(.s) | \(.n) | `\(.p)` | \(.c) |"' $d
+          } >> $GITHUB_STEP_SUMMARY
       - name: Resumen IaC (Trivy)
         run: |
           t=reportes/trivy-iac.json
